@@ -1,7 +1,10 @@
-oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o yaml > /tmp/cr-current.yaml
-wc -l /tmp/cr-current.yaml
+# What service account does the masters StatefulSet actually run as?
+oc get statefulset opensearch-cluster-masters -n opensearch -o jsonpath='{.spec.template.spec.serviceAccountName}'
+echo
 
-oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o jsonpath='{.status}' | python3 -m json.tool 2>/dev/null || oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o yaml | sed -n '/^status:/,$p'
+# Show all SCCs and which SAs are bound to them
+oc get rolebindings,clusterrolebindings -n opensearch -o wide 2>/dev/null | grep -iE 'scc|opensearch'
 
-oc get statefulset -n opensearch
-oc describe statefulset opensearch-cluster-masters -n opensearch | tail -40
+# Direct check: is opensearch-sa allowed to use anyuid + privileged SCCs?
+oc adm policy who-can use scc anyuid -n opensearch | grep -iE 'opensearch|system:serviceaccount:opensearch'
+oc adm policy who-can use scc privileged -n opensearch | grep -iE 'opensearch|system:serviceaccount:opensearch'
