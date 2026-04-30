@@ -1,2 +1,5 @@
-oc get pv pvc-d6c8f5a4-8370-45bc-9848-5198049e296f -o yaml
+oc patch pv pvc-d6c8f5a4-8370-45bc-9848-5198049e296f --type=json -p='[{"op": "remove", "path": "/spec/claimRef"}]'
+
+oc get pv pvc-d6c8f5a4-8370-45bc-9848-5198049e296f
+
 
