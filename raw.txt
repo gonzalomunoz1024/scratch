@@ -1,27 +1,8 @@
-cat <<'EOF' | oc apply -f -
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: opensearch-init-defaults
-  namespace: opensearch
-spec:
-  limits:
-  - type: Container
-    defaultRequest:
-      cpu: 50m
-      memory: 64Mi
-    default:
-      cpu: 200m
-      memory: 256Mi
-EOF
+oc get pods -n opensearch
 
+oc describe pod opensearch-cluster-masters-0 -n opensearch | sed -n '/Containers:/,/Events:/p; /Events:/,$p' | tail -60
 
+oc logs opensearch-cluster-masters-0 -n opensearch --all-containers --tail=80 2>&1 | tail -80
 
-oc get resourcequota -n opensearch -o yaml
-
-
-oc rollout restart statefulset/opensearch-cluster-masters -n opensearch
-
-
-oc get pods -n opensearch -w
-
+oc get resourcequota -n opensearch
+oc describe resourcequota -n opensearch
