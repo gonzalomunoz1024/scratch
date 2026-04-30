@@ -1,0 +1,8 @@
+# Patch every PV currently bound to a PVC in the opensearch namespace
+for pv in $(oc get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="opensearch")]}{.metadata.name} {end}'); do
+  echo "Patching $pv -> Retain"
+  oc patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+done
+
+# Verify
+oc get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="opensearch")]}{.metadata.name}{"\t"}{.spec.persistentVolumeReclaimPolicy}{"\n"}{end}'
