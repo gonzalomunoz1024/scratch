@@ -1,8 +1,7 @@
-# Current data size on the source PVC
-oc exec opensearch-cluster-masters-0 -n opensearch -c opensearch -- du -sh /usr/share/opensearch/data 2>&1
+oc get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="opensearch")]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.spec.capacity.storage}{"\t"}{.spec.persistentVolumeReclaimPolicy}{"\t"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}' | sort -k6
 
-# What's actually in there — sanity check there's real data and not just metadata
-oc exec opensearch-cluster-masters-0 -n opensearch -c opensearch -- ls /usr/share/opensearch/data/nodes/0/indices/ 2>&1 | head -20
+oc get pv -o jsonpath='{range .items[?(@.status.phase=="Released")]}{.metadata.name}{"\t"}{.spec.capacity.storage}{"\t"}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
 
-# Storage class details — confirms what backup PVC should request
-oc get pvc data-opensearch-cluster-masters-0 -n opensearch -o jsonpath='{.spec.storageClassName}{"\n"}{.spec.resources.requests.storage}{"\n"}{.spec.accessModes}{"\n"}'
+oc get pv -o jsonpath='{range .items[?(@.spec.capacity.storage=="30Gi")]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
+
+oc get secrets -n opensearch -o name | grep -E 'sh.helm.release.v1.opensearch-cluster.v[0-9]+'
