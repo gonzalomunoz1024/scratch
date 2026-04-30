@@ -1,5 +1,5 @@
-oc adm policy add-scc-to-user anyuid     -z default -n opensearch
-oc adm policy add-scc-to-user privileged -z default -n opensearch
+# What is the StatefulSet currently saying?
+oc describe statefulset opensearch-cluster-masters -n opensearch | tail -20
 
-
-oc rollout restart statefulset/opensearch-cluster-masters -n opensearch
+# Recent events — should show whether SCC errors are gone or still happening
+oc get events -n opensearch --sort-by='.lastTimestamp' | tail -15
