@@ -1,8 +1,7 @@
-oc get pods -n opensearch
+oc exec opensearch-cluster-masters-0 -n opensearch -c opensearch -- \
+  ls -la /usr/share/opensearch/data/ /usr/share/opensearch/data/nodes/ 2>&1 | head -30
 
-oc describe pod opensearch-cluster-masters-0 -n opensearch | sed -n '/Containers:/,/Events:/p; /Events:/,$p' | tail -60
+  oc exec opensearch-cluster-masters-0 -n opensearch -c opensearch -- \
+    du -sh /usr/share/opensearch/data 2>&1
 
-oc logs opensearch-cluster-masters-0 -n opensearch --all-containers --tail=80 2>&1 | tail -80
-
-oc get resourcequota -n opensearch
-oc describe resourcequota -n opensearch
+    oc describe pod opensearch-cluster-bootstrap-0 -n opensearch | tail -30
