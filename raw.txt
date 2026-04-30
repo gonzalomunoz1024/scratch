@@ -1,5 +1,27 @@
-# What is the StatefulSet currently saying?
-oc describe statefulset opensearch-cluster-masters -n opensearch | tail -20
+cat <<'EOF' | oc apply -f -
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: opensearch-init-defaults
+  namespace: opensearch
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 50m
+      memory: 64Mi
+    default:
+      cpu: 200m
+      memory: 256Mi
+EOF
 
-# Recent events — should show whether SCC errors are gone or still happening
-oc get events -n opensearch --sort-by='.lastTimestamp' | tail -15
+
+
+oc get resourcequota -n opensearch -o yaml
+
+
+oc rollout restart statefulset/opensearch-cluster-masters -n opensearch
+
+
+oc get pods -n opensearch -w
+
