@@ -1,7 +1,2 @@
-oc get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="opensearch")]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.spec.capacity.storage}{"\t"}{.spec.persistentVolumeReclaimPolicy}{"\t"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}' | sort -k6
+oc get pv pvc-d6c8f5a4-8370-45bc-9848-5198049e296f -o yaml
 
-oc get pv -o jsonpath='{range .items[?(@.status.phase=="Released")]}{.metadata.name}{"\t"}{.spec.capacity.storage}{"\t"}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
-
-oc get pv -o jsonpath='{range .items[?(@.spec.capacity.storage=="30Gi")]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
-
-oc get secrets -n opensearch -o name | grep -E 'sh.helm.release.v1.opensearch-cluster.v[0-9]+'
