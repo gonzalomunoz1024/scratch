@@ -1,4 +1,7 @@
-# Check the .opster.io group (the official operator)
-oc get opensearchclusters.opensearch.opster.io -n opensearch
-bash# Check the .opensearch.org group (whatever this is)
-oc get opensearchclusters.opensearch.org -n opensearch
+oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o yaml > /tmp/cr-current.yaml
+wc -l /tmp/cr-current.yaml
+
+oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o jsonpath='{.status}' | python3 -m json.tool 2>/dev/null || oc get opensearchclusters.opensearch.org opensearch-cluster -n opensearch -o yaml | sed -n '/^status:/,$p'
+
+oc get statefulset -n opensearch
+oc describe statefulset opensearch-cluster-masters -n opensearch | tail -40
