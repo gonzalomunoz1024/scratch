@@ -1,10 +1,5 @@
-# What service account does the masters StatefulSet actually run as?
-oc get statefulset opensearch-cluster-masters -n opensearch -o jsonpath='{.spec.template.spec.serviceAccountName}'
-echo
+oc adm policy add-scc-to-user anyuid     -z default -n opensearch
+oc adm policy add-scc-to-user privileged -z default -n opensearch
 
-# Show all SCCs and which SAs are bound to them
-oc get rolebindings,clusterrolebindings -n opensearch -o wide 2>/dev/null | grep -iE 'scc|opensearch'
 
-# Direct check: is opensearch-sa allowed to use anyuid + privileged SCCs?
-oc adm policy who-can use scc anyuid -n opensearch | grep -iE 'opensearch|system:serviceaccount:opensearch'
-oc adm policy who-can use scc privileged -n opensearch | grep -iE 'opensearch|system:serviceaccount:opensearch'
+oc rollout restart statefulset/opensearch-cluster-masters -n opensearch
