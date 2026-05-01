@@ -20,13 +20,14 @@ cd "$(dirname "$0")"
 
 TARGET_URL="${TARGET_URL:-https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net}"
 TARGET_USER="${TARGET_USER:-admin}"
-TARGET_PASS="${TARGET_PASS:-RuntimeCrew}"
+TARGET_PASS="${TARGET_PASS:-RuntimeCrew123}"
 EXPORT_DIR="${EXPORT_DIR:-./exports}"
-BULK_BATCH_LINES="${BULK_BATCH_LINES:-2000}"  # = 1000 docs per batch (action + source)
+BULK_BATCH_LINES="${BULK_BATCH_LINES:-200}"   # = 100 docs per batch (action + source). Small enough to survive most OpenShift route limits.
 
 CURL_TIMEOUT="${CURL_TIMEOUT:-60}"
-CURL_JSON=(-sS -k --max-time "$CURL_TIMEOUT" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/json')
-CURL_NDJSON=(-sS -k --max-time "$CURL_TIMEOUT" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/x-ndjson')
+CURL_RETRY=(--retry 3 --retry-delay 2 --retry-connrefused)
+CURL_JSON=(-sS -k --max-time "$CURL_TIMEOUT" "${CURL_RETRY[@]}" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/json')
+CURL_NDJSON=(-sS -k --max-time "$CURL_TIMEOUT" "${CURL_RETRY[@]}" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/x-ndjson')
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -123,21 +124,53 @@ for mapping_file in "${mapping_files[@]}"; do
     trap "rm -rf '$tmpdir'" EXIT
     split -l "$BULK_BATCH_LINES" "$docs_file" "$tmpdir/chunk-"
 
+    batch_num=0
+    total_batches=$(ls "$tmpdir"/chunk-* | wc -l | tr -d ' ')
     for chunk in "$tmpdir"/chunk-*; do
+      batch_num=$((batch_num+1))
+      chunk_lines=$(wc -l < "$chunk" | tr -d ' ')
+      chunk_docs=$(( chunk_lines / 2 ))
+      chunk_bytes=$(wc -c < "$chunk" | tr -d ' ')
+
       # _bulk requires a trailing newline. Make sure we have one.
       [[ "$(tail -c1 "$chunk")" == "" ]] || printf '\n' >> "$chunk"
+
+      printf '  batch %d/%d  (%d docs, %d bytes)... ' \
+        "$batch_num" "$total_batches" "$chunk_docs" "$chunk_bytes"
 
       bulk_resp=$(curl "${CURL_NDJSON[@]}" \
         -X POST "$TARGET_URL/$base/_bulk" \
         --data-binary "@$chunk")
-      errs=$(echo "$bulk_resp" | jq -r '.errors // true')
+
+      # Validate that we got a JSON object (not an HTML error page from the router).
+      if ! echo "$bulk_resp" | jq -e . >/dev/null 2>&1; then
+        echo "FAIL"
+        echo "  raw response (first 500 chars):" >&2
+        echo "$bulk_resp" | head -c 500 >&2
+        echo >&2
+        die "bulk response was not JSON for $base batch $batch_num"
+      fi
+
+      errs=$(echo "$bulk_resp" | jq -r '.errors // "missing"')
+      if [[ "$errs" == "missing" ]]; then
+        # Top-level error response (e.g. 413, auth, etc.)
+        echo "FAIL"
+        echo "  raw response:" >&2
+        echo "$bulk_resp" | jq . >&2 2>/dev/null || echo "$bulk_resp" >&2
+        die "bulk top-level error for $base batch $batch_num"
+      fi
+
       if [[ "$errs" != "false" ]]; then
+        echo "FAIL"
         # Show the first failing item for diagnosis.
         first_err=$(echo "$bulk_resp" | jq -c '
-          .items // [] | map(.[].error // empty) | .[0] // "no items[]"
+          [.items[] | (.[] | select(.error)) // empty] | .[0] // "(no item-level error?)"
         ')
-        die "bulk error in $base: $first_err"
+        echo "  first item error: $first_err" >&2
+        die "bulk per-item error in $base batch $batch_num"
       fi
+
+      echo "ok"
     done
 
     rm -rf "$tmpdir"
@@ -158,14 +191,3 @@ done
 
 echo
 echo "Imported $imported indices, skipped $skipped. Done."
-
-
-
-
-
-# 1. Confirm what's actually on the local source — I still want to see this
-curl -sS 'http://localhost:9200/_cat/indices?v&expand_wildcards=all' | sort
-
-# 2. Confirm nothing user-named got created on the target during the previous attempt
-curl -sS -k --max-time 10 -u admin:RuntimeCrew123 \
-  'https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cat/indices?v'
