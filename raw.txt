@@ -151,15 +151,19 @@ for mapping_file in "${mapping_files[@]}"; do
         die "bulk response was not JSON for $base batch $batch_num"
       fi
 
-      errs=$(echo "$bulk_resp" | jq -r '.errors // "missing"')
-      if [[ "$errs" == "missing" ]]; then
-        # Top-level error response (e.g. 413, auth, etc.)
+      # Check whether the response has the bulk shape (errors + items).
+      # NOTE: cannot use `.errors // "missing"` because jq's // treats `false`
+      # the same as missing/null, which is exactly the success case we want
+      # to recognize. Use `has("errors")` instead.
+      has_errors_field=$(echo "$bulk_resp" | jq -r 'has("errors")')
+      if [[ "$has_errors_field" != "true" ]]; then
         echo "FAIL"
         echo "  raw response:" >&2
         echo "$bulk_resp" | jq . >&2 2>/dev/null || echo "$bulk_resp" >&2
-        die "bulk top-level error for $base batch $batch_num"
+        die "bulk top-level error for $base batch $batch_num (no .errors field)"
       fi
 
+      errs=$(echo "$bulk_resp" | jq -r '.errors')
       if [[ "$errs" != "false" ]]; then
         echo "FAIL"
         # Show the first failing item for diagnosis.
