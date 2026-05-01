@@ -1,4 +1,9 @@
-indices=()
-while IFS= read -r line; do
-  indices+=("$line")
-done < <(curl -fsS "$SOURCE_URL/_cat/indices?h=index&expand_wildcards=all" | awk 'NF' | sort)
+curl -sS -k -u admin:RuntimeCrew https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cat/indices/hello-world,lightspeed-events,vmforge-events?v
+
+
+# Is the script actually still running?
+ps aux | grep -E '03-import|curl' | grep -v grep
+
+# Can you reach the target at all, with a timeout?
+curl -sS -k --max-time 10 -u admin:RuntimeCrew123 \
+  https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cluster/health
