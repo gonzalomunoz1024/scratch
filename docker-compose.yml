@@ -1,22 +1,22 @@
-# Local single-node OpenSearch used as a "source" cluster to read the
-# recovered PVC data from ./os-data and re-export it cleanly.
+# Local single-node OpenSearch + Dashboards used as a "source" stack to
+# read the recovered PVC data from ./os-data and re-export it cleanly,
+# including saved objects (visualizations, dashboards, index patterns).
 #
-# Security is disabled so we can hit the API on plain HTTP with no auth.
-# auto_import_dangling_indices=true picks up indices that exist on disk
-# but aren't in the cluster state yet.
+# Security is disabled on both so we can hit the APIs over plain HTTP
+# with no auth. auto_import_dangling_indices=true picks up indices on
+# disk that aren't in the cluster state yet.
 #
 # Notes:
-# - Image tag matches the version your data was created with (2.3.0).
-#   If your data is from a newer minor, bump this; OpenSearch refuses
-#   to read indices from a newer version.
-# - ./os-data must be owned by UID 1000 (opensearch user). The chown
-#   step (alpine throwaway container) handles this.
-# - Dashboards is intentionally omitted: we agreed to skip dashboards
-#   import for now and migrate indices only.
+# - Image tag is 2.11.1, which can read Lucene 9.5 indices (the original
+#   2.3.0 image couldn't — it ships Lucene 9.3 only).
+# - ./os-data must be owned by UID 1000 (the opensearch user inside the
+#   container). 01-start-local.sh handles that with a throwaway alpine.
+# - Dashboards is needed for the saved-objects export/import API. The
+#   endpoint is http://localhost:5601/api/saved_objects/_export.
 
 services:
   opensearch:
-    image: opensearchproject/opensearch:2.3.0
+    image: opensearchproject/opensearch:2.11.1
     container_name: os-migrate-source
     environment:
       - cluster.name=migrate-source
@@ -43,3 +43,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.1
+    container_name: os-migrate-dashboards
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
