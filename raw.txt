@@ -1,1 +1,4 @@
-chmod +x 01-start-local.sh 02-export.sh 03-import.sh
+indices=()
+while IFS= read -r line; do
+  indices+=("$line")
+done < <(curl -fsS "$SOURCE_URL/_cat/indices?h=index&expand_wildcards=all" | awk 'NF' | sort)
