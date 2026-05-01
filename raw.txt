@@ -1,9 +1,171 @@
-curl -sS -k -u admin:RuntimeCrew https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cat/indices/hello-world,lightspeed-events,vmforge-events?v
+#!/usr/bin/env bash
+# 03-import.sh — import exported indices into the target OpenSearch cluster.
+#
+# Reads from ./exports/ (output of 02-export.sh):
+#   <name>.settings.json
+#   <name>.mapping.json
+#   <name>.docs.ndjson
+#
+# Behavior:
+#   - Indices only (no Dashboards saved objects, per current decision).
+#   - Skips system indices defensively (the export already does, but in
+#     case someone hand-drops files into ./exports/).
+#   - Fails fast on the first error.
+#   - Verifies post-import doc counts match the source NDJSON.
+#
+# Requires: bash, curl, jq.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+TARGET_URL="${TARGET_URL:-https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net}"
+TARGET_USER="${TARGET_USER:-admin}"
+TARGET_PASS="${TARGET_PASS:-RuntimeCrew}"
+EXPORT_DIR="${EXPORT_DIR:-./exports}"
+BULK_BATCH_LINES="${BULK_BATCH_LINES:-2000}"  # = 1000 docs per batch (action + source)
+
+CURL_TIMEOUT="${CURL_TIMEOUT:-60}"
+CURL_JSON=(-sS -k --max-time "$CURL_TIMEOUT" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/json')
+CURL_NDJSON=(-sS -k --max-time "$CURL_TIMEOUT" -u "${TARGET_USER}:${TARGET_PASS}" -H 'Content-Type: application/x-ndjson')
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+skip_index() {
+  case "$1" in
+    .opendistro_*|.opensearch-*|.kibana*|.ql-*|.plugins-*|security-auditlog*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---- preflight --------------------------------------------------------------
+command -v jq   >/dev/null || die "jq is required"
+command -v curl >/dev/null || die "curl is required"
+[[ -d "$EXPORT_DIR" ]]     || die "export dir not found: $EXPORT_DIR"
+
+echo "Target: $TARGET_URL"
+echo "Probing target cluster health..."
+health=$(curl "${CURL_JSON[@]}" "$TARGET_URL/_cluster/health") \
+  || die "could not reach target (auth? TLS? URL?)"
+status=$(echo "$health" | jq -r '.status // "unknown"')
+echo "  cluster status: $status"
+[[ "$status" == "red" ]] && die "target cluster is RED, aborting"
+[[ "$status" == "unknown" ]] && die "unexpected health response: $health"
+
+# ---- iterate indices --------------------------------------------------------
+shopt -s nullglob
+mapping_files=( "$EXPORT_DIR"/*.mapping.json )
+[[ ${#mapping_files[@]} -gt 0 ]] || die "no .mapping.json files in $EXPORT_DIR"
+
+imported=0
+skipped=0
+
+for mapping_file in "${mapping_files[@]}"; do
+  base=$(basename "$mapping_file" .mapping.json)
+
+  if skip_index "$base"; then
+    echo "SKIP  $base  (system index)"
+    skipped=$((skipped+1))
+    continue
+  fi
+
+  settings_file="$EXPORT_DIR/$base.settings.json"
+  docs_file="$EXPORT_DIR/$base.docs.ndjson"
+  [[ -f "$settings_file" ]] || die "missing $settings_file"
+  [[ -f "$docs_file"     ]] || die "missing $docs_file"
+
+  echo
+  echo "==> $base"
+
+  # Build a clean create-index body. The source's _settings includes
+  # read-only fields (creation_date, uuid, provided_name, version) that
+  # the target rejects on PUT — strip them. Keep the rest of index.* as-is.
+  create_body=$(jq -n \
+    --slurpfile s "$settings_file" \
+    --slurpfile m "$mapping_file" \
+    --arg idx "$base" '
+      ($s[0][$idx].settings.index // {}) as $raw |
+      ($m[0][$idx].mappings       // {}) as $map |
+      {
+        settings: {
+          index: ($raw | del(
+            .creation_date, .uuid, .provided_name, .version,
+            .resize, .routing, .history
+          ))
+        },
+        mappings: $map
+      }
+    ')
+
+  # Refuse to overwrite an existing index — safer than silently merging.
+  # Use _cat/indices instead of HEAD because some OpenShift routes mishandle HEAD.
+  exists_resp=$(curl "${CURL_JSON[@]}" \
+    "$TARGET_URL/_cat/indices/$base?h=index" 2>/dev/null || true)
+  exists_resp=$(echo "$exists_resp" | tr -d '[:space:]')
+  if [[ "$exists_resp" == "$base" ]]; then
+    die "index '$base' already exists on target — refusing to overwrite. Delete it first if you really want to re-import."
+  fi
+
+  echo "  creating index..."
+  resp=$(curl "${CURL_JSON[@]}" -X PUT "$TARGET_URL/$base" -d "$create_body")
+  ack=$(echo "$resp" | jq -r '.acknowledged // false')
+  [[ "$ack" == "true" ]] || die "create failed for $base: $resp"
+
+  # Bulk-load docs.
+  doc_lines=$(wc -l < "$docs_file" | tr -d ' ')
+  expected=$(( doc_lines / 2 ))
+  if (( expected == 0 )); then
+    echo "  no docs to load (empty index)"
+  else
+    echo "  bulk loading $expected docs (in batches of $((BULK_BATCH_LINES/2)))..."
+    # Stream the NDJSON in chunks aligned to action+source pairs.
+    # split -l produces exact line counts; we ensure BULK_BATCH_LINES is even.
+    tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" EXIT
+    split -l "$BULK_BATCH_LINES" "$docs_file" "$tmpdir/chunk-"
+
+    for chunk in "$tmpdir"/chunk-*; do
+      # _bulk requires a trailing newline. Make sure we have one.
+      [[ "$(tail -c1 "$chunk")" == "" ]] || printf '\n' >> "$chunk"
+
+      bulk_resp=$(curl "${CURL_NDJSON[@]}" \
+        -X POST "$TARGET_URL/$base/_bulk" \
+        --data-binary "@$chunk")
+      errs=$(echo "$bulk_resp" | jq -r '.errors // true')
+      if [[ "$errs" != "false" ]]; then
+        # Show the first failing item for diagnosis.
+        first_err=$(echo "$bulk_resp" | jq -c '
+          .items // [] | map(.[].error // empty) | .[0] // "no items[]"
+        ')
+        die "bulk error in $base: $first_err"
+      fi
+    done
+
+    rm -rf "$tmpdir"
+    trap - EXIT
+  fi
+
+  # Refresh and verify count.
+  curl "${CURL_JSON[@]}" -X POST "$TARGET_URL/$base/_refresh" >/dev/null
+  count_resp=$(curl "${CURL_JSON[@]}" "$TARGET_URL/$base/_count")
+  actual=$(echo "$count_resp" | jq -r '.count // -1')
+  echo "  expected $expected, target reports $actual"
+  if [[ "$actual" != "$expected" ]]; then
+    die "doc count mismatch for $base (expected $expected, got $actual)"
+  fi
+
+  imported=$((imported+1))
+done
+
+echo
+echo "Imported $imported indices, skipped $skipped. Done."
 
 
-# Is the script actually still running?
-ps aux | grep -E '03-import|curl' | grep -v grep
 
-# Can you reach the target at all, with a timeout?
+
+
+# 1. Confirm what's actually on the local source — I still want to see this
+curl -sS 'http://localhost:9200/_cat/indices?v&expand_wildcards=all' | sort
+
+# 2. Confirm nothing user-named got created on the target during the previous attempt
 curl -sS -k --max-time 10 -u admin:RuntimeCrew123 \
-  https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cluster/health
+  'https://opensearch-api-opensearch.apps.cml27.ocp.lab.wellsfargo.net/_cat/indices?v'
