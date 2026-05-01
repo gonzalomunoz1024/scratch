@@ -1,4 +1,73 @@
-oc get pv pvc-d6c8f5a4-8370-45bc-9848-5198049e296f -o jsonpath='{.status.phase}{"\t"}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"\t"}{.spec.claimRef.uid}{"\n"}'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-inspector
+  namespace: opensearch
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: opensearch-sa
+      restartPolicy: Never
+      containers:
+      - name: inspector
+        image: docker.io/busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== Top-level contents ==="
+          ls -la /data
+          echo ""
+          echo "=== Total size ==="
+          du -sh /data
+          echo ""
+          echo "=== Sizes by top-level dir ==="
+          du -sh /data/* 2>/dev/null
+          echo ""
+          echo "=== nodes/0 contents ==="
+          ls -la /data/nodes/0/ 2>&1
+          echo ""
+          echo "=== Indices ==="
+          ls -la /data/nodes/0/indices/ 2>&1 || echo "(indices/ not at default path)"
+          echo ""
+          echo "=== Index UUIDs (count) ==="
+          ls /data/nodes/0/indices/ 2>/dev/null | wc -l
+          echo ""
+          echo "=== Per-index sizes ==="
+          du -sh /data/nodes/0/indices/* 2>/dev/null
+          echo ""
+          echo "=== State files ==="
+          find /data -name "node-*.st" -o -name "manifest-*.st" 2>/dev/null
+          echo ""
+          echo "=== DONE ==="
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: data-opensearch-masters-0
 
 
-oc get pvc -n opensearch
+
+oc delete -f inspect.yaml --ignore-not-found
+oc apply -f inspect.yaml
+
+oc get pods -n opensearch -l job-name=data-inspector -w
+
+oc logs -n opensearch -l job-name=data-inspector
