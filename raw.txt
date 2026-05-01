@@ -1,11 +1,76 @@
- security:
-    config:
-      adminCredentialsSecret:
-        name: opensearch-cluster-admin-password
+mkdir -p ~/os-migration
+cd ~/os-migration
+
+# Move OR copy your existing data folder here as `os-data`.
+# If your folder is small (yours is ~1.5MB), just copy it.
+cp -R /path/to/your/extracted/folder ./os-data
+
+# Verify the structure
+ls os-data/
+ls os-data/nodes/0/indices/ | head
 
 
-oc create secret generic opensearch-cluster-admin-password \
-  -n $NAMESPACE \
-  --from-literal=username=admin \
-  --from-literal=password='RuntimeCrew123' \
-  --dry-run=client -o yaml | oc apply -f -
+
+docker run --rm -v "$PWD/os-data:/data" --user 0:0 alpine:3 sh -c "chown -R 1000:1000 /data && chmod -R u+rwX /data"
+
+
+ls -ln os-data/nodes/0/indices/ | head -3
+
+
+
+version: "3.8"
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.3.0
+    container_name: os-source
+    environment:
+      - cluster.name=migration-source
+      - node.name=os-source-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - gateway.auto_import_dangling_indices=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./os-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.3.0
+    container_name: os-source-dashboards
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - "5601:5601"
+    depends_on:
+      - opensearch
+
+
+cd ~/os-migration
+docker compose up -d
+
+
+docker compose logs -f opensearch
+
+
+# Cluster healthy?
+curl -s http://localhost:9200/_cluster/health | jq
+
+# What indices does it see?
+curl -s "http://localhost:9200/_cat/indices?v&expand_wildcards=all"
+
+# Dashboards UI?
+open http://localhost:5601    # macOS
+# or just visit http://localhost:5601 in your browser
