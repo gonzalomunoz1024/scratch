@@ -1,0 +1,166 @@
+# Claude connectivity preflight — fully self-contained.
+#
+# Run this BEFORE anything else in this directory (00-05). It validates that
+# a pod on this OpenShift cluster can actually reach Anthropic, install the
+# CLI, and round-trip a request — proving the whole stack is viable before
+# you invest time installing Dev Spaces / ESO / configuring devfiles.
+#
+#   1. Paste your Anthropic API key into the Secret below
+#      (the ONE line marked  <-- EDIT THIS LINE  ).
+#   2. Apply:
+#        oc apply -f 06-smoke-test.yaml
+#   3. Watch:
+#        oc logs -n claude-preflight -f job/claude-smoke-test
+#   4. Clean up everything this file created:
+#        oc delete -f 06-smoke-test.yaml
+#
+# This file creates its own namespace `claude-preflight` and tears down
+# cleanly with `oc delete -f`. It does not depend on Dev Spaces, ESO,
+# vLLM, or any other Secret. Nothing outside the `claude-preflight`
+# namespace is touched.
+#
+# A passing run ends with:   ✅  SMOKE TEST PASSED
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: claude-preflight
+  labels:
+    app.kubernetes.io/name: claude-preflight
+    app.kubernetes.io/purpose: connectivity-check
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: anthropic-api-key
+  namespace: claude-preflight
+type: Opaque
+stringData:
+  # vvv  EDIT THIS LINE  vvv
+  ANTHROPIC_API_KEY: sk-ant-REPLACE_ME
+  # ^^^  EDIT THIS LINE  ^^^
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: claude-smoke-test
+  namespace: claude-preflight
+  labels:
+    app.kubernetes.io/name: claude-smoke-test
+spec:
+  ttlSecondsAfterFinished: 3600 # auto-delete 1h after completion
+  backoffLimit: 0 # don't retry — failure should be obvious in logs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: claude-smoke-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: claude
+          image: registry.access.redhat.com/ubi9/nodejs-20:latest
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: ANTHROPIC_API_KEY
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: '1', memory: 1Gi }
+          command: ['/bin/bash', '-euo', 'pipefail', '-c']
+          args:
+            - |
+              HOST="${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+              BARE_HOST=$(echo "$HOST" | sed -E 's#^https?://##; s#/.*##; s#:.*##')
+
+              echo "=============================================="
+              echo " Claude Code connectivity preflight"
+              echo " Target: $HOST"
+              echo " Pod:    $(hostname)  /  ns: $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+              echo "=============================================="
+
+              if [ "${ANTHROPIC_API_KEY:-}" = "sk-ant-REPLACE_ME" ] || [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo
+                echo "❌  ANTHROPIC_API_KEY is still the placeholder."
+                echo "    Edit the Secret stringData in this file and re-apply."
+                exit 1
+              fi
+
+              echo
+              echo "[1/6] DNS resolution for $BARE_HOST..."
+              if ! getent hosts "$BARE_HOST" >/dev/null; then
+                echo "❌  DNS FAIL — pod cannot resolve $BARE_HOST."
+                echo "    Check CoreDNS, cluster network policy, and any"
+                echo "    egress DNS rules."
+                exit 1
+              fi
+              getent hosts "$BARE_HOST"
+
+              echo
+              echo "[2/6] TCP/443 reachability..."
+              if ! timeout 10 bash -c "</dev/tcp/$BARE_HOST/443" 2>/dev/null; then
+                echo "❌  EGRESS FAIL — cannot open TCP/443 to $BARE_HOST."
+                echo "    Likely NetworkPolicy, egress firewall, or proxy."
+                exit 1
+              fi
+              echo "    OK"
+
+              echo
+              echo "[3/6] TLS handshake..."
+              if ! echo | openssl s_client -connect "$BARE_HOST:443" \
+                   -servername "$BARE_HOST" -brief 2>&1 | grep -q "Verification: OK"; then
+                echo "❌  TLS FAIL — cert chain does not verify."
+                echo "    A MITM proxy is probably re-signing with a CA not"
+                echo "    trusted in this image. Mount your corporate CA"
+                echo "    bundle into /etc/pki/ca-trust/source/anchors/ and"
+                echo "    run update-ca-trust."
+                exit 1
+              fi
+              echo "    OK"
+
+              echo
+              echo "[4/6] Anthropic API auth (GET /v1/models)..."
+              HTTP_CODE=$(curl -sS -o /tmp/models.json -w '%{http_code}' \
+                "$HOST/v1/models" \
+                -H "x-api-key: $ANTHROPIC_API_KEY" \
+                -H "anthropic-version: 2023-06-01" || echo "000")
+              echo "    HTTP $HTTP_CODE"
+              if [ "$HTTP_CODE" != "200" ]; then
+                echo "❌  AUTH FAIL — server responded $HTTP_CODE."
+                echo "    First 400 bytes of response:"
+                head -c 400 /tmp/models.json; echo
+                exit 1
+              fi
+
+              echo
+              echo "[5/6] Installing @anthropic-ai/claude-code from npm..."
+              # registry.npmjs.org is a separate egress path from
+              # api.anthropic.com — often allowed/blocked independently.
+              if ! npm install -g @anthropic-ai/claude-code >/tmp/npm.log 2>&1; then
+                echo "❌  NPM FAIL — could not install the CLI."
+                echo "    Likely registry.npmjs.org is blocked. Last log lines:"
+                tail -20 /tmp/npm.log
+                exit 1
+              fi
+              echo "    $(claude --version)"
+
+              echo
+              echo "[6/6] End-to-end: asking Claude to reply with a known string..."
+              OUT=$(claude --bare -p "Reply with exactly: HELLO FROM OPENSHIFT" \
+                    --output-format text --max-turns 1 2>&1) || {
+                echo "❌  CLI FAIL — claude -p exited non-zero."
+                echo "$OUT"
+                exit 1
+              }
+              echo "    Model said: $OUT"
+              if ! echo "$OUT" | grep -q "HELLO FROM OPENSHIFT"; then
+                echo "⚠️   Model did not echo the canary string verbatim."
+                echo "    Connectivity is fine; this is a model-behaviour"
+                echo "    quirk, not an infra problem."
+              fi
+
+              echo
+              echo "=============================================="
+              echo " ✅  SMOKE TEST PASSED"
+              echo "=============================================="

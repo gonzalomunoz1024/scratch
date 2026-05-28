@@ -1,0 +1,64 @@
+# CheCluster: the singleton CR that the Dev Spaces operator reconciles into
+# a full Dev Spaces / Eclipse Che deployment. Apply this AFTER installing the
+# "Red Hat OpenShift Dev Spaces" operator from OperatorHub.
+#
+# Namespace convention:
+#   - Operator + CheCluster live in `openshift-devspaces`
+#   - Each developer gets their own `<user>-devspaces` namespace at first login
+apiVersion: org.eclipse.che/v2
+kind: CheCluster
+metadata:
+  name: devspaces
+  namespace: openshift-devspaces
+spec:
+  components:
+    # Use the public Open VSX registry so Anthropic.claude-code can be
+    # resolved by Che-Code. For air-gapped clusters, mirror Open VSX
+    # internally and point this at the mirror URL.
+    pluginRegistry:
+      openVSXURL: 'https://open-vsx.org'
+    cheServer:
+      logLevel: INFO
+    dashboard: {}
+    devfileRegistry: {}
+    metrics:
+      enable: true
+
+  devEnvironments:
+    # Che-Code (Code-OSS) is the default browser IDE.
+    defaultEditor: che-incubator/che-code/latest
+
+    # Base container injected into every workspace that doesn't override it.
+    # Repos with their own devfile.yaml will replace this.
+    defaultComponents:
+      - name: dev-tools
+        container:
+          image: registry.access.redhat.com/ubi9/nodejs-20:latest
+          memoryLimit: 4Gi
+          memoryRequest: 1Gi
+          cpuLimit: '2'
+          cpuRequest: 500m
+          mountSources: true
+
+    # Workspaces idle out after 30 min of no activity to control GPU/CPU cost.
+    secondsOfInactivityBeforeIdling: 1800
+    secondsOfRunBeforeIdling: -1
+    startTimeoutSeconds: 600
+    maxNumberOfWorkspacesPerUser: 3
+    maxNumberOfRunningWorkspacesPerUser: 1
+
+    # Per-workspace PVC keeps /projects across restarts of the same workspace.
+    storage:
+      pvcStrategy: per-workspace
+      perWorkspaceStrategyPvcConfig:
+        claimSize: 10Gi
+
+    # Containers run as a non-root UID assigned by OpenShift's SCC.
+    containerBuildConfiguration: {}
+
+  networking:
+    auth:
+      gateway:
+        configLabels:
+          app: che
+          component: che-gateway-config

@@ -1,0 +1,78 @@
+# OPTIONAL — only apply this if you want Claude Code in Dev Spaces to talk
+# to an in-cluster vLLM endpoint instead of api.anthropic.com.
+#
+# Requires:
+#   - NVIDIA GPU Operator installed on the cluster
+#   - At least one GPU-enabled MachineSet / worker node
+#   - A HuggingFace token (for gated models), stored in `huggingface-token` secret
+#
+# After this is running, uncomment the ANTHROPIC_BASE_URL / model env vars in
+# 03-devfile.yaml and the URL will resolve to vllm.ai.svc.cluster.local:8000.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: huggingface-token
+  namespace: ai
+type: Opaque
+stringData:
+  HF_TOKEN: REPLACE_WITH_HUGGINGFACE_TOKEN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: ai
+  labels: { app: vllm }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: vllm } }
+  template:
+    metadata:
+      labels: { app: vllm }
+    spec:
+      containers:
+        - name: vllm
+          image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3
+          args:
+            - '--model=RedHatAI/gpt-oss-20b'
+            - '--served-model-name=gpt-oss-20b'
+            - '--tensor-parallel-size=4'
+            - '--max-model-len=8192'
+            - '--port=8000'
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: huggingface-token, key: HF_TOKEN } }
+          resources:
+            limits:
+              nvidia.com/gpu: '4'
+              memory: 64Gi
+              cpu: '8'
+            requests:
+              nvidia.com/gpu: '4'
+              memory: 32Gi
+              cpu: '4'
+          volumeMounts:
+            - { name: cache, mountPath: /root/.cache/huggingface }
+      volumes:
+        - name: cache
+          emptyDir: { sizeLimit: 100Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: ai
+spec:
+  selector: { app: vllm }
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http

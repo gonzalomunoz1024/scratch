@@ -1,0 +1,110 @@
+# devfile.yaml — commit this to the ROOT of each GitHub repo you want to be
+# Claude-Code-enabled in Dev Spaces. It describes the per-developer workspace
+# pod: container image, env, Git project to clone, and the Claude Code editor
+# extension to install on first launch.
+#
+# Reference docs:
+#   https://devfile.io/docs/2.2.0/devfile-schema
+#   https://eclipse.dev/che/docs/stable/end-user-guide/
+schemaVersion: 2.2.0
+metadata:
+  name: claude-workspace
+  version: 1.0.0
+  displayName: Claude Code workspace
+  description: Node 20 + Claude Code, wired to GitHub via Dev Spaces OAuth.
+
+# Repo to clone into the pod. Dev Spaces uses the GitHub OAuth token from
+# 01-github-oauth-secret.yaml to authenticate the clone.
+projects:
+  - name: myapp
+    git:
+      remotes:
+        origin: 'https://github.com/myorg/myapp.git'
+      checkoutFrom:
+        revision: main
+
+components:
+  # The workspace's primary container. `mountSources: true` mounts /projects
+  # so the cloned repo lives in this container.
+  - name: tools
+    container:
+      image: registry.access.redhat.com/ubi9/nodejs-20:latest
+      memoryRequest: 1Gi
+      memoryLimit: 4Gi
+      cpuRequest: 500m
+      cpuLimit: '2'
+      mountSources: true
+      env:
+        - name: NODE_OPTIONS
+          value: '--max-old-space-size=4096'
+        # --- Self-hosted-model mode (uncomment to bypass api.anthropic.com) ---
+        # - name: ANTHROPIC_BASE_URL
+        #   value: 'http://vllm.ai.svc.cluster.local:8000'
+        # - name: ANTHROPIC_DEFAULT_OPUS_MODEL
+        #   value: 'gpt-oss-20b'
+        # - name: ANTHROPIC_DEFAULT_SONNET_MODEL
+        #   value: 'gpt-oss-20b'
+        # - name: ANTHROPIC_DEFAULT_HAIKU_MODEL
+        #   value: 'gpt-oss-20b'
+        # - name: CLAUDE_CODE_SKIP_AUTH_LOGIN
+        #   value: '1'
+        #
+        # ANTHROPIC_API_KEY is NOT listed here — it is auto-injected from
+        # 02-anthropic-secret.yaml by the DevWorkspace controller.
+      endpoints:
+        - name: app-http
+          targetPort: 3000
+          exposure: public
+          protocol: https
+
+# Commands the workspace can run. `install-claude` runs once at startup and
+# `npm install -g`s the CLI globally so `claude` is on $PATH in the terminal.
+# Che-Code separately picks up the Open VSX extension via `.vscode/extensions.json`
+# inside the repo (see snippet at the bottom of this file).
+commands:
+  - id: install-claude
+    exec:
+      component: tools
+      commandLine: 'npm install -g @anthropic-ai/claude-code'
+      workingDir: ${PROJECT_SOURCE}
+
+  - id: install-deps
+    exec:
+      component: tools
+      commandLine: 'npm ci || true'
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: build
+        isDefault: true
+
+  - id: dev
+    exec:
+      component: tools
+      commandLine: 'npm run dev'
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: run
+        isDefault: true
+
+events:
+  postStart:
+    - install-claude
+    - install-deps
+
+# ----------------------------------------------------------------------------
+# Companion file you should also commit to your repo, alongside devfile.yaml:
+#
+#   .vscode/extensions.json
+#   {
+#     "recommendations": ["Anthropic.claude-code"]
+#   }
+#
+# Che-Code reads this on workspace open and offers to install the extension
+# from Open VSX. To force-install without prompting, also commit:
+#
+#   .vscode/settings.json
+#   {
+#     "extensions.autoUpdate": true,
+#     "extensions.autoCheckUpdates": true
+#   }
+# ----------------------------------------------------------------------------
