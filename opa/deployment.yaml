@@ -6,6 +6,14 @@ metadata:
     app: opa-polling
 spec:
   replicas: 1
+  progressDeadlineSeconds: 180
+  # Recreate (vs RollingUpdate): with a single replica there's no point in
+  # keeping the old pod alive until the new one is Ready, and Recreate makes
+  # termination crisp — old pod is killed first (max 10s grace), then the new
+  # pod starts. No "Terminating for 60s while new pod can't pass readiness"
+  # behavior.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: opa-polling

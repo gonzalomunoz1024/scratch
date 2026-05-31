@@ -9,6 +9,11 @@ data:
     services:
       - name: bundle-service
         url: ${SERVICE_URL}
+        # Skip TLS verification for the bundle endpoint. The Java service in
+        # OpenShift is fronted by a Route whose cert is signed by the cluster
+        # ingress CA, which OPA's Go client does not trust by default. To
+        # tighten: drop this flag and mount a CA bundle, then set tls.ca_cert.
+        allow_insecure_tls: true
     bundles:
       main:
         service: bundle-service
