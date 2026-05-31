@@ -13,7 +13,10 @@ spec:
     metadata:
       labels:
         app: opa-polling
+      annotations:
+        checksum/config: "${CONFIG_HASH}"
     spec:
+      terminationGracePeriodSeconds: 10
       containers:
         - name: opa-polling
           image: openpolicyagent/opa:latest-rootless
@@ -22,6 +25,8 @@ spec:
             - "--server"
             - "--addr=0.0.0.0:8181"
             - "--config-file=/config/config.yaml"
+            - "--shutdown-grace-period=5"
+            - "--shutdown-wait-period=2"
             - "--log-level=info"
           ports:
             - containerPort: 8181
@@ -30,6 +35,8 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: /health?bundles
@@ -58,3 +65,5 @@ spec:
         - name: config
           configMap:
             name: opa-polling-config
+        - name: tmp
+          emptyDir: {}
