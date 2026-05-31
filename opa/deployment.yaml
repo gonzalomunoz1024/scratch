@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: opa
+  name: opa-polling
   labels:
-    app: opa
+    app: opa-polling
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: opa
+      app: opa-polling
   template:
     metadata:
       labels:
-        app: opa
+        app: opa-polling
     spec:
       containers:
-        - name: opa
+        - name: opa-polling
           image: openpolicyagent/opa:latest-rootless
           args:
             - "run"
@@ -57,4 +57,4 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: opa-config
+            name: opa-polling-config

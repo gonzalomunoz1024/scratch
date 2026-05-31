@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: opa-config
+  name: opa-polling-config
   labels:
-    app: opa
+    app: opa-polling
 data:
   config.yaml: |
     services:

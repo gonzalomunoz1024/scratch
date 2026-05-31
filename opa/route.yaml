@@ -1,13 +1,13 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: opa
+  name: opa-polling
   labels:
-    app: opa
+    app: opa-polling
 spec:
   to:
     kind: Service
-    name: opa
+    name: opa-polling
     weight: 100
   port:
     targetPort: http

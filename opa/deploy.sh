@@ -4,12 +4,17 @@
 #
 # Usage:
 #   ./deploy.sh
-# Prompts for the bundle URL and namespace, then applies the manifests in
-# this directory (configmap, deployment, service, route).
+# Prompts for the bundle URL, then applies the manifests in this directory
+# (configmap, deployment, service, route) into the hard-coded namespace below.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Hard-coded for now — change here if/when we move OPA elsewhere.
+NAMESPACE="claut-203679-primer"
+POLL_MIN=20
+POLL_MAX=60
 
 # ---- preflight -------------------------------------------------------------
 if ! command -v oc >/dev/null 2>&1; then
@@ -23,31 +28,24 @@ if ! oc whoami >/dev/null 2>&1; then
 fi
 
 # ---- prompts ---------------------------------------------------------------
-# The Java service exposes the bundle at a fixed path; we only need the base
-# URL of the service (e.g. an in-cluster Service or an OpenShift Route).
-DEFAULT_BUNDLE_PATH="v1/utilities/registry/opa/bundle"
-
-read -rp "Java service base URL (e.g. http://orchestrator-api.orchestrator.svc:8081): " SERVICE_URL
-if [ -z "${SERVICE_URL}" ]; then
-  echo "ERROR: service URL is required." >&2
+read -rp "Bundle endpoint URL (e.g. http://orchestrator-api.orchestrator.svc:8081/v1/utilities/registry/opa/bundle): " BUNDLE_URL
+if [ -z "${BUNDLE_URL}" ]; then
+  echo "ERROR: bundle URL is required." >&2
   exit 1
 fi
-# Strip trailing slash so concatenation is clean.
-SERVICE_URL="${SERVICE_URL%/}"
 
-read -rp "Bundle path [${DEFAULT_BUNDLE_PATH}]: " RESOURCE
-RESOURCE="${RESOURCE:-${DEFAULT_BUNDLE_PATH}}"
-# Strip any leading slash — OPA expects a relative resource.
-RESOURCE="${RESOURCE#/}"
-
-read -rp "OpenShift namespace [opa]: " NAMESPACE
-NAMESPACE="${NAMESPACE:-opa}"
-
-read -rp "Bundle polling min delay seconds [60]: " POLL_MIN
-POLL_MIN="${POLL_MIN:-60}"
-
-read -rp "Bundle polling max delay seconds [120]: " POLL_MAX
-POLL_MAX="${POLL_MAX:-120}"
+# OPA's bundle plugin wants service.url (scheme://host[:port]) and a relative
+# resource path. Split the full URL accordingly.
+PROTO="${BUNDLE_URL%%://*}"
+REST="${BUNDLE_URL#*://}"
+HOST="${REST%%/*}"
+PATH_PART="${REST#*/}"
+if [ "${PATH_PART}" = "${REST}" ] || [ -z "${PATH_PART}" ]; then
+  echo "ERROR: URL must include a path to the bundle, e.g. http://host:8081/v1/utilities/registry/opa/bundle" >&2
+  exit 1
+fi
+SERVICE_URL="${PROTO}://${HOST}"
+RESOURCE="${PATH_PART}"
 
 echo
 echo "About to deploy OPA with:"
@@ -91,22 +89,22 @@ for f in configmap.yaml deployment.yaml service.yaml route.yaml; do
 done
 
 # Force a rollout so an updated ConfigMap is picked up on re-runs.
-oc -n "${NAMESPACE}" rollout restart deployment/opa >/dev/null 2>&1 || true
+oc -n "${NAMESPACE}" rollout restart deployment/opa-polling >/dev/null 2>&1 || true
 
 echo
 echo "Waiting for rollout..."
-oc -n "${NAMESPACE}" rollout status deployment/opa --timeout=180s || {
+oc -n "${NAMESPACE}" rollout status deployment/opa-polling --timeout=180s || {
   echo "Rollout did not complete; recent pod state:"
-  oc -n "${NAMESPACE}" get pods -l app=opa -o wide
-  oc -n "${NAMESPACE}" logs deploy/opa --tail=50 || true
+  oc -n "${NAMESPACE}" get pods -l app=opa-polling -o wide
+  oc -n "${NAMESPACE}" logs deploy/opa-polling --tail=50 || true
   exit 1
 }
 
-ROUTE_HOST="$(oc -n "${NAMESPACE}" get route opa -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+ROUTE_HOST="$(oc -n "${NAMESPACE}" get route opa-polling -o jsonpath='{.spec.host}' 2>/dev/null || true)"
 echo
 echo "OPA deployed."
 if [ -n "${ROUTE_HOST}" ]; then
   echo "  Route:   https://${ROUTE_HOST}"
   echo "  Health:  https://${ROUTE_HOST}/health?bundles"
 fi
-echo "  In-cluster: http://opa.${NAMESPACE}.svc.cluster.local:8181"
+echo "  In-cluster: http://opa-polling.${NAMESPACE}.svc.cluster.local:8181"
