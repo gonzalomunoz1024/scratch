@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-config
+  labels:
+    app: opa
+data:
+  config.yaml: |
+    services:
+      - name: bundle-service
+        url: ${SERVICE_URL}
+    bundles:
+      main:
+        service: bundle-service
+        resource: ${RESOURCE}
+        polling:
+          min_delay_seconds: ${POLL_MIN}
+          max_delay_seconds: ${POLL_MAX}
+    decision_logs:
+      console: true
+    status:
+      console: true
