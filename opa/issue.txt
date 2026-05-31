@@ -1,0 +1,73 @@
+OPA bundle load failure: rego v0 parser rejects v1 syntax
+==========================================================
+
+WHAT OPA SAID
+-------------
+{"level":"error",
+ "msg":"Bundle load failed: 1 error occurred:
+        policies/my-policy@1.0/policy.rego:17: rego_parse_error:
+        var cannot be used for rule name",
+ "plugin":"bundle"}
+
+bundles.main.code             = "bundle_error"
+bundles.main.errors[0].code   = "rego_parse_error"
+bundles.main.errors[0].message= "var cannot be used for rule name"
+bundles.main.errors[0].location = {file: policies/my-policy@1.0/policy.rego,
+                                    row: 17, col: 1}
+
+Because activation failed, last_successful_download and
+last_successful_activation are both 0001-01-01T00:00:00Z (i.e. never).
+The bundle keeps getting polled, but no policies are ever loaded into
+OPA, so /v1/policies stays empty and any decision query falls back to
+its default value (allow := false).
+
+
+WHAT IT ACTUALLY MEANS
+----------------------
+The policy file is using OPA 1.0-style syntax:
+
+    allow if {
+        input.configuration.allowed_sizes[_] == input.document.spec.resource.size
+    }
+
+The `if` / `in` / `contains` / `every` keywords were optional in OPA 0.x
+and only became default-enabled in OPA 1.0. By default, OPA still parses
+each .rego file with v0 semantics UNLESS one of these is true:
+
+  (a) the file starts with `import rego.v1`, OR
+  (b) the bundle's .manifest declares `"rego_version": 1`, OR
+  (c) the file imports the specific future keyword
+      (`import future.keywords.if`, etc.).
+
+Without any of those, the v0 parser sees `allow if { ... }` and tries
+to read `if` as a variable in the rule head — hence the exact diagnostic
+"var cannot be used for rule name" at row 17, col 1 (the line beginning
+with `allow if`).
+
+
+Option 1 — Bundle-wide opt-in  (RECOMMENDED, one line in the Java
+                                bundle assembler):
+
+  In OpaBundleAdapter.java (or wherever the .manifest JSON is built),
+  add a `rego_version: 1` field next to revision/roots. The manifest
+  the Java service tars into the bundle should look like:
+
+      {
+        "revision": "<sha256>",
+        "roots":    [""],
+        "rego_version": 1
+      }
+
+  After that, every .rego in the bundle is parsed as v1 with no
+  per-file import needed. This is the right fix for a project that
+  has standardized on v1 syntax.
+
+
+WHY THIS IS A POLICY/UPLOAD-SIDE FIX, NOT AN OPA-DEPLOY FIX
+-----------------------------------------------------------
+The OPA deployment is healthy: it is reaching the bundle endpoint,
+downloading the tar, untarring it, and trying to compile the policies.
+The failure is purely at the rego compile step inside OPA. Nothing in
+the Deployment, ConfigMap, Service or Route needs to change. The fix
+belongs either in the .rego source (option 2 / 3) or in the Java
+component that emits the bundle's .manifest (option 1).
