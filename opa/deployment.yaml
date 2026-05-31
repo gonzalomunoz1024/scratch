@@ -27,7 +27,12 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: opa-polling
-          image: openpolicyagent/opa:latest-rootless
+          # NOTE: do NOT switch back to openpolicyagent/opa:*-rootless. That
+          # tag is deprecated (banner exits non-zero) and is pinned to a pre-
+          # 0.59 OPA that does not understand `rego_version` in .manifest, so
+          # v1-syntax bundles fail with "rego_parse_error: var cannot be used
+          # for rule name". Plain :latest has been non-root since v0.50.0.
+          image: openpolicyagent/opa:latest
           args:
             - "run"
             - "--server"
